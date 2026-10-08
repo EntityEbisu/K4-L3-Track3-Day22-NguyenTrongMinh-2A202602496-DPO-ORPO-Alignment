@@ -49,3 +49,6 @@ hf_cache/
 .idea/
 .vscode/
 *.swp
+
+# Agent planning scratch (Hermes plan mode)
+.hermes/
