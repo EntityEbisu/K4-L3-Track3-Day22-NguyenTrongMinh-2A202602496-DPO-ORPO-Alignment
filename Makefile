@@ -91,6 +91,9 @@ beta-sweep: ## Retrain DPO with beta in {0.05, 0.1, 0.5} and plot held-out rewar
 colab: ## Regenerate colab/*.ipynb from notebooks/ + lab22/
 	@$(PY) scripts/build_colab.py
 
+kaggle: ## Regenerate kaggle/Lab22_DPO_Kaggle.ipynb (Colab bundle + zip-export cell)
+	@$(PY) scripts/build_kaggle.py
+
 # ─────────────────────────────────────────────────────────────
 # Verify + clean
 # ─────────────────────────────────────────────────────────────
@@ -114,4 +117,4 @@ clean: ## Wipe models/, adapters/, data/pref, data/eval, gguf*/
 clean-all: clean ## Wipe everything including venv + HF cache
 	rm -rf $(VENV) ~/.cache/huggingface/hub
 
-.PHONY: help setup smoke nb0 sft data dpo variants eval deploy bench grpo pipeline pipeline-full beta-sweep colab verify lab test clean clean-all
+.PHONY: help setup smoke nb0 sft data dpo variants eval deploy bench grpo pipeline pipeline-full beta-sweep colab kaggle verify lab test clean clean-all
