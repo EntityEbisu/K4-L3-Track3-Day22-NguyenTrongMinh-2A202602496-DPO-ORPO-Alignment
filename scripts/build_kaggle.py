@@ -40,6 +40,10 @@ INTRO = """# Lab 22 — DPO/ORPO Alignment (Kaggle, T4 tier)
   `lab22-submission.zip`.
 - Nếu `pip install` làm hỏng torch/CUDA của Kaggle, chạy lại kernel rồi bỏ các gói đã có sẵn
   (torch, transformers, datasets, accelerate, peft, bitsandbytes) khỏi ô cài đặt.
+- NB5 xuất GGUF vào `/tmp/lab22-gguf` (không phải `gguf/`) vì `/kaggle/working` chỉ có ~20 GB
+  và đã chứa bản `sft-merged` ~8 GB; export cần thêm ~17 GB.
+- Trước ô chấm NB4 có thêm một ô **dọn bộ nhớ GPU**: nếu Kaggle cấp 2 GPU nó chuyển reward
+  model sang GPU rảnh (tránh `CUDA out of memory`), và tự dựng lại `records` sau khi restart.
 
 Core: NB0 → NB4. Bonus: NB3b (variants), NB5 (GGUF), NB6 (lm-eval), NB7 (GRPO).
 Each stage reloads what it needs from disk, so after a crash you can restart the runtime,
@@ -135,11 +139,104 @@ def md(text: str) -> dict:
     return {"cell_type": "markdown", "metadata": {}, "source": lines}
 
 
+# --- Kaggle-only fixes applied on top of the Colab render --------------------
+# 1. GGUF export: /kaggle/working is a ~20 GB quota that already holds the 8 GB
+#    sft-merged, but the export needs ~17 GB more (16-bit merge + f16 GGUF +
+#    q4_k_m coexist). Redirect it to the container root FS; the .gguf is
+#    gitignored, only data/eval/deploy_meta.json is graded.
+GGUF_OLD = '''model.save_pretrained_gguf(str(C.GGUF_DIR), tokenizer, quantization_method="q4_k_m")
+# Optional for the +3 rigor add-on: quantization_method=["q4_k_m", "q5_k_m", "q8_0"]
+
+
+def find_gguf(pattern: str = "q4_k_m") -> Path:
+    hits = [p for p in C.REPO_ROOT.glob("gguf*/**/*.gguf") if pattern in p.name.lower()]
+    assert hits, f"No *{pattern}*.gguf under {C.REPO_ROOT}/gguf*"
+    return max(hits, key=lambda p: p.stat().st_mtime)
+
+
+gguf_path = find_gguf()
+print(f"{gguf_path.relative_to(C.REPO_ROOT)}  {gguf_path.stat().st_size / 1e9:.2f} GB")'''
+
+GGUF_NEW = '''# Kaggle: /kaggle/working is a ~20 GB quota and already holds the 8 GB sft-merged,
+# but the export needs ~17 GB more (16-bit merge + f16 GGUF + q4_k_m coexist).
+# Write to the container root FS instead; the .gguf is gitignored anyway.
+import shutil
+
+GGUF_TMP = Path("/tmp/lab22-gguf")
+GGUF_TMP.mkdir(parents=True, exist_ok=True)
+print(f"{GGUF_TMP}: {shutil.disk_usage(GGUF_TMP).free / 1e9:.1f} GB free")
+
+model.save_pretrained_gguf(str(GGUF_TMP), tokenizer, quantization_method="q4_k_m")
+
+hits = [p for p in GGUF_TMP.glob("**/*.gguf") if "q4_k_m" in p.name.lower()]
+assert hits, f"No *q4_k_m*.gguf under {GGUF_TMP}"
+gguf_path = max(hits, key=lambda p: p.stat().st_mtime)
+print(f"{gguf_path}  {gguf_path.stat().st_size / 1e9:.2f} GB")'''
+
+DEPLOY_OLD = '    "gguf_path": str(gguf_path.relative_to(C.REPO_ROOT)),'
+DEPLOY_NEW = '    "gguf_path": str(gguf_path),  # absolute: the GGUF lives on /tmp, not under the repo'
+
+REPLACEMENTS = [(GGUF_OLD, GGUF_NEW), (DEPLOY_OLD, DEPLOY_NEW)]
+
+# 2. Inserted before the NB4 judge cell: the generation cell can leave ~7 GiB
+#    referenced on GPU 0, so each reward model (~8 GiB fp16) no longer fits.
+#    Free what we can and, when a second GPU is idle, run the judge there.
+JUDGE_MARKER = "provider = C.JUDGE_PROVIDER"
+
+RECOVERY_MD = """### Dọn bộ nhớ GPU trước khi chấm
+
+Ô sinh câu trả lời (NB4 §1) có thể còn giữ ~7 GiB trên GPU 0, khiến reward model
+(~8 GiB fp16 trên T4) không nạp nổi — đó là nguyên nhân `CUDA out of memory` ở ô chấm.
+Ô dưới đây giải phóng bộ nhớ và, nếu Kaggle cấp 2 GPU, chuyển giám khảo sang GPU đang rảnh.
+Nó cũng tự dựng lại `records` từ `side_by_side.jsonl` nếu bạn vừa restart kernel."""
+
+RECOVERY_CODE = '''# Free the previous stage's GPU memory; route the reward-model judge to an idle
+# GPU when one exists. Also rebuilds `records` after a kernel restart.
+import gc, hashlib, importlib, json
+from pathlib import Path
+import torch
+
+for _n in ("model", "trainer", "ref_model", "llm", "policy", "ref", "tokenizer", "score"):
+    globals().pop(_n, None)
+gc.collect()
+torch.cuda.empty_cache()
+
+if "records" not in globals():
+    _sb = C.EVAL_DIR / "side_by_side.jsonl"
+    records = [json.loads(line) for line in _sb.read_text(encoding="utf-8").splitlines() if line.strip()]
+    OUTPUTS_SHA = hashlib.sha256(_sb.read_bytes()).hexdigest()
+    print(f"rebuilt {len(records)} records from {_sb.name}")
+
+target = 0
+if torch.cuda.device_count() > 1 and torch.cuda.mem_get_info(1)[0] > torch.cuda.mem_get_info(0)[0]:
+    target = 1
+    _jf = Path("/kaggle/working/lab22/lab22/judge.py")
+    _jf.write_text(_jf.read_text().replace('device_map="cuda:0"', f'device_map="cuda:{target}"'))
+    import lab22.judge as J
+    importlib.reload(J)
+for _i in range(torch.cuda.device_count()):
+    _free, _total = torch.cuda.mem_get_info(_i)
+    print(f"  GPU {_i}: {_free / 1e9:.1f} / {_total / 1e9:.1f} GiB free")
+print(f"judge will run on cuda:{target}")'''
+
+
+def set_source(cell: dict, text: str) -> None:
+    lines = text.splitlines(keepends=True)
+    if lines:
+        lines[-1] = lines[-1].rstrip("\n")
+    cell["source"] = lines
+
+
 def render_kaggle() -> dict:
     nb = render("T4")
     for cell in nb["cells"]:
-        cell["source"] = [line.replace(COLAB_WORKDIR, KAGGLE_WORKDIR) for line in cell["source"]]
+        text = "".join(cell["source"]).replace(COLAB_WORKDIR, KAGGLE_WORKDIR)
+        for old, new in REPLACEMENTS:
+            text = text.replace(old, new)
+        set_source(cell, text)
     nb["cells"][0] = md(INTRO)
+    idx = next(i for i, c in enumerate(nb["cells"]) if "".join(c["source"]).lstrip().startswith(JUDGE_MARKER))
+    nb["cells"][idx:idx] = [md(RECOVERY_MD), code(RECOVERY_CODE)]
     nb["cells"] += [md(EXTRACT_MD), code(EXTRACT_CODE)]
     nb["metadata"] = {
         "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
