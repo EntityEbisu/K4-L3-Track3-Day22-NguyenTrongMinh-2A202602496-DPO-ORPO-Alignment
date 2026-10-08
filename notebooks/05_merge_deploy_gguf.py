@@ -87,6 +87,10 @@ MD.cleanup()
 # mô hình SFT (NB4) thì adapter DPO đã bị bỏ sót.
 
 # %%
+import textwrap
+
+import matplotlib.pyplot as plt
+
 from llama_cpp import Llama
 
 llm = Llama(model_path=str(gguf_path), n_ctx=C.MAX_LEN, n_gpu_layers=-1, verbose=False)
@@ -95,6 +99,29 @@ gguf_answer = resp["choices"][0]["text"].strip()
 print(f"PROMPT: {SMOKE_PROMPT}\n\nGGUF Q4_K_M:\n{gguf_answer}\n\nusage: {resp['usage']}")
 llm.close()  # release the llama.cpp GPU buffers before the next notebook
 del llm
+
+# Side-by-side screenshot (submission artifact `06-gguf-smoke.png`).
+def _wrap(text: str, width: int = 62) -> str:
+    return "\n".join(textwrap.wrap(text, width)) or "(empty)"
+
+
+fig, ax = plt.subplots(figsize=(13, 6.5))
+ax.axis("off")
+cells = [
+    ["", "HF (SFT+DPO, 16-bit)", "GGUF Q4_K_M"],
+    ["answer", _wrap(hf_answer), _wrap(gguf_answer)],
+]
+table = ax.table(cellText=cells, loc="center", cellLoc="left", colWidths=[0.1, 0.45, 0.45])
+table.auto_set_font_size(False)
+table.set_fontsize(8)
+table.scale(1.0, 12)
+for j in range(3):
+    table[(0, j)].set_facecolor("#2e548a")
+    table[(0, j)].set_text_props(color="white", weight="bold")
+fig.suptitle(f"GGUF smoke test · {gguf_path.name} · prompt: {SMOKE_PROMPT}", y=0.98, fontsize=9)
+C.SCREENSHOTS.mkdir(parents=True, exist_ok=True)
+fig.savefig(C.SCREENSHOTS / "06-gguf-smoke.png", dpi=120, bbox_inches="tight")
+plt.show()
 
 # %%
 deploy_meta = {
