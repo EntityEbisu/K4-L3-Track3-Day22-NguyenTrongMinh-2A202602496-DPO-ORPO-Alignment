@@ -49,7 +49,6 @@ BENCHMARKS = {
     "Global-MMLU-vi": ("global_mmlu_full_vi", 0, 40 if BIG else 10, "acc,none"),
 }
 DTYPE = "bfloat16" if torch.cuda.is_bf16_supported() else "float16"
-BATCH = "auto" if BIG else "4"
 for name, (task, shots, limit, _metric) in BENCHMARKS.items():
     print(f"{name:15s} task={task} fewshot={shots} limit/subtask={limit or 'all'}")
 
@@ -58,25 +57,31 @@ for name, (task, shots, limit, _metric) in BENCHMARKS.items():
 
 # %%
 def run_lm_eval(label: str, task: str, shots: int, limit: int | None) -> dict:
-    model_args = f"pretrained={C.SFT_MERGED},dtype={DTYPE},enable_thinking=False"
+    model_args = f"pretrained={C.SFT_MERGED},dtype={DTYPE},enable_thinking=False,max_length=4096"
     if label == "dpo":
         model_args += f",peft={C.DPO_ADAPTER}"
     out_dir = C.EVAL_DIR / "lm_eval" / f"{label}-{task}"
+    # lm_eval runs as a subprocess with its own CUDA context. GPU 0 may still hold
+    # the parent kernel's leftover memory, so run on whichever GPU is freer.
+    dev = max(range(torch.cuda.device_count()), key=lambda i: torch.cuda.mem_get_info(i)[0])
     cmd = [
         "lm_eval", "--model", "hf", "--model_args", model_args,
         "--tasks", task, "--num_fewshot", str(shots),
-        "--apply_chat_template", "--batch_size", BATCH,
-        "--device", "cuda:0", "--seed", str(C.SEED), "--output_path", str(out_dir),
+        "--apply_chat_template", "--batch_size", "1",
+        "--device", f"cuda:{dev}", "--seed", str(C.SEED), "--output_path", str(out_dir),
     ]
     if shots:
         cmd.append("--fewshot_as_multiturn")
     if limit:
         cmd += ["--limit", str(limit)]
-    print(f"\n>>> {label} · {task}\n{' '.join(cmd)}")
+    print(f"\n>>> {label} · {task} on cuda:{dev}\n{' '.join(cmd)}")
     proc = subprocess.run(cmd, capture_output=True, text=True)
     files = sorted(out_dir.glob("**/results*.json"), key=lambda p: p.stat().st_mtime)
     if proc.returncode != 0 or not files:
-        print(proc.stderr[-2000:])
+        # Dump both streams: lm_eval puts the real error in stderr and the task
+        # summary in stdout, and the RuntimeError alone is not actionable.
+        print("=== lm_eval stderr (tail) ===\n", proc.stderr[-4000:])
+        print("=== lm_eval stdout (tail) ===\n", proc.stdout[-1500:])
         raise RuntimeError(f"lm_eval failed for {label}/{task}")
     return json.loads(files[-1].read_text())
 
