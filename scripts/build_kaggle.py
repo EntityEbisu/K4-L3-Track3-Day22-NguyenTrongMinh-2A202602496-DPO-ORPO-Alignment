@@ -168,8 +168,10 @@ print(f"{GGUF_TMP}: {shutil.disk_usage(GGUF_TMP).free / 1e9:.1f} GB free")
 
 model.save_pretrained_gguf(str(GGUF_TMP), tokenizer, quantization_method="q4_k_m")
 
-hits = [p for p in GGUF_TMP.glob("**/*.gguf") if "q4_k_m" in p.name.lower()]
-assert hits, f"No *q4_k_m*.gguf under {GGUF_TMP}"
+# Unsloth appends "_gguf" to the save dir, so the export is a sibling of GGUF_TMP
+# (GGUF_TMP holds the 16-bit merged checkpoint). Search the parent, not GGUF_TMP.
+hits = [p for p in Path("/tmp").glob("lab22-gguf*/**/*.gguf") if "q4_k_m" in p.name.lower()]
+assert hits, "no q4_k_m gguf under /tmp/lab22-gguf*"
 gguf_path = max(hits, key=lambda p: p.stat().st_mtime)
 print(f"{gguf_path}  {gguf_path.stat().st_size / 1e9:.2f} GB")'''
 
