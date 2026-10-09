@@ -15,6 +15,10 @@ __pycache__/
 # Lab artifacts: weights stay local. The small evidence files below ARE committed,
 # because the auto-grader reads only what is in the repo.
 models/
+!models/sft-merged/
+models/sft-merged/*
+!models/sft-merged/config.json
+!models/sft-merged/tokenizer_config.json
 adapters/*
 !adapters/.gitkeep
 !adapters/*/

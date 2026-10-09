@@ -1,0 +1,17 @@
+{
+  "compute_tier": "T4",
+  "dtype": "float16",
+  "chat_template": true,
+  "results": [
+    {
+      "benchmark": "IFEval",
+      "task": "ifeval",
+      "limit_per_subtask": 200,
+      "sft": 0.5,
+      "sft_stderr": 0.0354440602504168,
+      "dpo": 0.515,
+      "dpo_stderr": 0.035428106832977174,
+      "delta": 0.015000000000000013
+    }
+  ]
+}
